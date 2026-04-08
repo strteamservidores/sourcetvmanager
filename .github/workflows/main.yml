@@ -18,8 +18,6 @@ on:
       - LICENSE
       - README.md
   workflow_dispatch:
-  schedule:
-    - cron: "30 03 01 */3 *"
 
 jobs:
   build:
@@ -62,20 +60,11 @@ jobs:
             meta_branch: "1.11-dev"
 
     steps:
-      - name: Preparing to dump debug symbols
-        uses: actions/checkout@v4
-        with:
-          repository: mozilla/dump_syms
-          path: dump_syms
-
-      - name: Install dump_syms
-        run: cargo install --all-features --path ./dump_syms
-
       - name: Prepare env
         run: |
           echo "GITHUB_SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
-      # 🔥 LINUX CORRIGIDO (GCC + 32bit)
+      # 🔥 DEPENDÊNCIAS LINUX (FIXED)
       - name: Install dependencies
         run: |
           sudo dpkg --add-architecture i386
@@ -140,14 +129,6 @@ jobs:
             --sm-path="${{ github.workspace }}/sourcemod-${{ matrix.sm_version }}" \
             --mms-path="${{ github.workspace }}/metamod-${{ matrix.meta_version }}"
           ambuild
-
-      - name: Upload debug symbols
-        working-directory: sourcetvmanager/build
-        run: |
-          for f in $(find . -name "*.so"); do
-            dump_syms $f > $(basename $f).syms
-            curl --data-binary @$(basename $f).syms https://crash.limetech.org/symbols/submit
-          done
 
       - name: Upload package
         uses: actions/upload-artifact@v4
