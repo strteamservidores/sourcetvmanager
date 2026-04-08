@@ -1,4 +1,5 @@
-name: build
+```yaml
+name: build (Linux)
 
 on:
   push:
@@ -19,19 +20,16 @@ on:
       - README.md
   workflow_dispatch:
   schedule:
-    - cron: "30 03 01 */3 *" # Artifacts expire every 3 months
+    - cron: "30 03 01 */3 *"
 
 jobs:
   build:
-    name: build with sm${{ matrix.sm_version }} on ${{ matrix.os_short }}
-    runs-on: ${{ matrix.os }}
+    name: build with sm${{ matrix.sm_version }} (linux)
+    runs-on: ubuntu-22.04
+
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-20.04
-          - windows-latest
-
         sm_version:
           - "1.9"
           - "1.10"
@@ -40,7 +38,6 @@ jobs:
           - "latest"
 
         include:
-          # Use MM:Source 1.10 as base version
           - meta_version: "1.10"
             meta_branch: "1.10-dev"
 
@@ -65,12 +62,6 @@ jobs:
             meta_version: "1.11"
             meta_branch: "1.11-dev"
 
-          - os: ubuntu-20.04
-            os_short: linux
-
-          - os: windows-latest
-            os_short: win
-
     steps:
       - name: Preparing to dump debug symbols
         uses: actions/checkout@v4
@@ -82,38 +73,29 @@ jobs:
         run: cargo install --all-features --path ./dump_syms
 
       - name: Prepare env
-        shell: bash
         run: |
           echo "GITHUB_SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
-      - name: Install (Linux)
-        if: runner.os == 'Linux'
+      # 🔥 LINUX CORRIGIDO (GCC + 32bit)
+      - name: Install dependencies
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y clang g++-multilib
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
+          sudo apt-get install -y \
+            gcc g++ \
+            gcc-multilib g++-multilib \
+            libc6-dev libc6-dev-i386 \
+            libstdc++6 lib32stdc++6 \
+            lib32z1-dev zlib1g-dev \
+            make git python3 python3-pip
 
-      - name: Add msbuild to PATH (Windows)
-        if: runner.os == 'Windows'
-        uses: microsoft/setup-msbuild@v2
+          echo "CC=gcc" >> $GITHUB_ENV
+          echo "CXX=g++" >> $GITHUB_ENV
+          echo "CFLAGS=-m32 -fPIC" >> $GITHUB_ENV
+          echo "CXXFLAGS=-m32 -fPIC -static-libstdc++ -static-libgcc" >> $GITHUB_ENV
+          echo "LDFLAGS=-m32" >> $GITHUB_ENV
 
-      - name: Install (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          :: See https://github.com/microsoft/vswhere/wiki/Find-VC
-          for /f "usebackq delims=*" %%i in (`vswhere -latest -property installationPath`) do (
-            call "%%i"\Common7\Tools\vsdevcmd.bat -arch=x86 -host_arch=x64
-          )
-
-          :: Loop over all environment variables and make them global.
-          for /f "delims== tokens=1,2" %%a in ('set') do (
-            echo>>"%GITHUB_ENV%" %%a=%%b
-          )
-
-      - name: Getting SourceMod ${{ matrix.sm_version }}
+      - name: Getting SourceMod
         uses: actions/checkout@v4
         with:
           repository: alliedmodders/sourcemod
@@ -121,20 +103,19 @@ jobs:
           path: sourcemod-${{ matrix.sm_version }}
           submodules: recursive
 
-      - name: Getting MM:Source ${{ matrix.meta_version }}
+      - name: Getting MM:Source
         uses: actions/checkout@v4
         with:
           repository: alliedmodders/metamod-source
           ref: ${{ matrix.meta_branch }}
           path: metamod-${{ matrix.meta_version }}
 
-      - name: Getting ambuild
+      - name: Install AMBuild
         run: |
-          python -m pip install wheel
+          python3 -m pip install wheel
           pip install git+https://github.com/alliedmodders/ambuild
 
       - name: Getting SDKs
-        shell: bash
         run: |
           git clone --mirror https://github.com/alliedmodders/hl2sdk hl2sdk-proxy-repo
           sdks=(csgo tf2 css hl2dm dods l4d2 l4d)
@@ -143,66 +124,35 @@ jobs:
             git clone hl2sdk-proxy-repo -b $sdk hl2sdk-$sdk
           done
 
-      - name: Getting own repository
+      - name: Checkout plugin
         uses: actions/checkout@v4
         with:
           path: sourcetvmanager
           submodules: recursive
 
-      - name: Compiling SourceTV Manager files
+      - name: Build extension
         working-directory: sourcetvmanager
         run: |
           mkdir build
           cd build
-          python ../configure.py --enable-optimize --sdks=present --sm-path="${{ github.workspace }}/sourcemod-${{ matrix.sm_version }}" --mms-path="${{ github.workspace }}/metamod-${{ matrix.meta_version }}"
+          python3 ../configure.py \
+            --enable-optimize \
+            --sdks=present \
+            --sm-path="${{ github.workspace }}/sourcemod-${{ matrix.sm_version }}" \
+            --mms-path="${{ github.workspace }}/metamod-${{ matrix.meta_version }}"
           ambuild
 
-      - name: Uploading debug symbols
+      - name: Upload debug symbols
         working-directory: sourcetvmanager/build
-        shell: bash
         run: |
-          for f in $(find sourcetvmanager.ext.2.* -type f -print | grep \/sourcetvmanager\.ext\.2\.*\.); do
-            if ! [[ $f == *.so || $f == *.pdb ]]; then
-              continue
-            fi
+          for f in $(find . -name "*.so"); do
             dump_syms $f > $(basename $f).syms
             curl --data-binary @$(basename $f).syms https://crash.limetech.org/symbols/submit
           done
 
-      - name: Uploading package
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: sourcetvmanager-sm${{ matrix.sm_version }}-${{ matrix.os_short }}
+          name: sourcetvmanager-sm${{ matrix.sm_version }}-linux
           path: sourcetvmanager/build/package
-
-  release:
-    name: Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-
-      - name: Package
-        run: |
-          version=`echo $GITHUB_REF | sed "s/refs\/tags\///"`
-
-          ls -Rall
-
-          for folder in sourcetvmanager*
-          do
-            echo "Processing folder: $folder"
-            cd $folder
-            tar -czf ../${folder}-${version}.tar.gz -T <(\ls -1)
-            cd -
-          done
-
-      - name: Release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: '*.tar.gz'
-          tag: ${{ github.ref }}
-          file_glob: true
+```
