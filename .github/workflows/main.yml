@@ -1,4 +1,4 @@
-name: build (Linux SM 1.11)
+name: Build (Linux SM 1.11)
 
 on:
   push:
